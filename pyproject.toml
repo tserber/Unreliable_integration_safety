@@ -1,0 +1,12 @@
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = [
+    "E501",  # long lines are common in this repo's explanatory docstrings/comments
+]
+
+[tool.ruff.lint.per-file-ignores]
+"original_problem/baseline.py" = ["F821"]  # db/queue/crm are the brief's undefined externals, kept verbatim

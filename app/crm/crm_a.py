@@ -4,7 +4,7 @@ import asyncio
 import uuid
 from dataclasses import dataclass, field
 
-from app.crm.base import CallRecord, CRMResult, CRMTimeout, CRMRejected, FaultInjector
+from app.crm.base import CallRecord, CRMRejected, CRMResult, CRMTimeout, FaultInjector
 
 
 @dataclass

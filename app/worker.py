@@ -84,6 +84,20 @@ class Worker:
         for company_id in companies:
             limit = await self._concurrency_limit(company_id)
             if self._inflight[company_id] >= limit:
+                # Incident: "One company's backlog delaying other
+                # companies." - this is the backpressure guard against
+                # exactly that: this company has claimable work but is
+                # already at its own concurrency slice for this worker, so
+                # it's skipped THIS tick rather than drained first. Logged
+                # at debug (expected under a legitimate burst) - a
+                # sustained rate of these for one company_id is the signal
+                # an operator would alert on to catch that company
+                # genuinely flooding the system versus a one-tick blip.
+                log.debug(
+                    "company=%s at concurrency limit (%d), deferring to next tick "
+                    "without blocking other companies",
+                    company_id, limit,
+                )
                 continue
             self._inflight[company_id] += 1
             tasks.append(asyncio.create_task(self._run_one(company_id)))

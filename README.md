@@ -9,8 +9,18 @@ can't).
 
 See `DESIGN.md` for the full design writeup (transaction boundaries,
 fairness, rollout, what's implemented vs. design-only, and a dedicated
-"Known downsides and possible solutions" section) and `TRADEOFFS.md` for
-time spent, scope cuts, and AI tool disclosure.
+"Known downsides and possible solutions" section), `TRADEOFFS.md` for
+time spent, scope cuts, and AI tool disclosure, and `AGENTS.md` for the
+conventions an agent (or a human) should follow before changing code
+here.
+
+CI (`.github/workflows/ci.yml`) runs `ruff check .` and the full test
+suite against a real Postgres service container on every push and PR.
+To run the same checks locally:
+```bash
+pip install ruff
+ruff check .
+```
 
 ## Architecture in one paragraph
 

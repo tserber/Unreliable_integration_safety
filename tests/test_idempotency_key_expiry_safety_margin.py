@@ -24,7 +24,7 @@ async def test_old_in_flight_request_escalates_instead_of_retrying(pool, registr
     from app import repository
 
     async with pool.acquire() as conn:
-        claimed = await repository.claim_next_for_company(conn, "acme", "w1", settings.lease_seconds)
+        await repository.claim_next_for_company(conn, "acme", "w1", settings.lease_seconds)
     await backdate_first_claimed(pool, handoff_id, hours=settings.retry_cutoff_hours + 1)
     from tests.conftest import force_expire_lease
 

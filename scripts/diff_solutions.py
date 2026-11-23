@@ -240,10 +240,10 @@ async def run_demo() -> None:
     import os
     import uuid
 
+    from app import repository, service
     from app.config import Settings
     from app.crm.registry import CRMRegistry
     from app.db import create_pool
-    from app import repository, service
 
     db_url = os.environ.get(
         "TEST_DATABASE_URL", "postgresql://handoff:handoff@localhost:5432/handoff_test"

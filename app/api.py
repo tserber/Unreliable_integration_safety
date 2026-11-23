@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import uuid
 from contextlib import asynccontextmanager
 
@@ -12,6 +13,14 @@ from app import repository, service
 from app.config import load_settings
 from app.crm.registry import CRMRegistry
 from app.db import create_pool
+
+# Uvicorn configures its own loggers but leaves the root logger with no
+# handler, so our "api"/"service"/"worker" loggers would otherwise be
+# silently dropped below WARNING (Python's logging-last-resort fallback).
+# basicConfig is a no-op if something else already added a root handler
+# first, so this is safe regardless of how the process is started.
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+log = logging.getLogger("api")
 
 
 class AcceptRequest(BaseModel):
@@ -45,6 +54,7 @@ async def _watch_workers(app: FastAPI) -> None:
     to each worker), which keeps the API from depending on workers being
     reachable at all, only on the database both sides already depend on."""
     settings = app.state.settings
+    was_healthy = True  # assume healthy at boot; avoids a spurious alert before the first check
     while True:
         try:
             async with app.state.pool.acquire() as conn:
@@ -52,9 +62,24 @@ async def _watch_workers(app: FastAPI) -> None:
                     conn, settings.worker_heartbeat_stale_seconds
                 )
             app.state.healthy_worker_count = count
+            is_healthy = count > 0
+            if is_healthy != was_healthy:
+                # This is the distinction Part 3 asks for: "a healthy
+                # queue" (pending work, zero healthy workers) looks
+                # identical to "no work right now" from the accept side
+                # alone - this log line (and the /health/workers endpoint
+                # it backs) is what tells them apart, and is the one worth
+                # wiring an alert to.
+                log_fn = log.warning if not is_healthy else log.info
+                log_fn(
+                    "worker fleet health changed: healthy=%s healthy_worker_count=%d",
+                    is_healthy, count,
+                )
+            was_healthy = is_healthy
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001 - a failed check must not kill the loop
+            log.exception("worker health check failed")
             app.state.healthy_worker_count = None
         await asyncio.sleep(settings.worker_heartbeat_interval_seconds)
 
@@ -112,7 +137,7 @@ async def accept(company_id: str, body: AcceptRequest):
             app.state.pool, company_id, body.event_id, body.payload
         )
     except repository.NotFound as exc:
-        raise HTTPException(status_code=404, detail=str(exc))
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     return {"id": str(handoff_id), "accepted": True, "newly_created": created}
 
 
@@ -121,7 +146,7 @@ async def inspect(company_id: str, handoff_id: uuid.UUID):
     try:
         row = await service.get_handoff(app.state.pool, company_id, handoff_id)
     except repository.NotFound as exc:
-        raise HTTPException(status_code=404, detail=str(exc))
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     return _serialize(row)
 
 
@@ -137,11 +162,11 @@ async def resolve(company_id: str, handoff_id: uuid.UUID, body: ResolveRequest):
             reason=body.reason,
         )
     except repository.NotFound as exc:
-        raise HTTPException(status_code=404, detail=str(exc))
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     except repository.Conflict as exc:
-        raise HTTPException(status_code=409, detail=str(exc))
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return _serialize(row)
 
 
