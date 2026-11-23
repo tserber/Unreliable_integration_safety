@@ -422,62 +422,93 @@ async def operator_resolve(
     doesn't own this row affects zero rows and we raise NotFound exactly
     as if the row didn't exist. We never leak the row's existence, let
     alone its content, across a company boundary.
+
+    The whole read-check-write sequence runs inside one explicit
+    transaction: FOR UPDATE only holds its row lock for the lifetime of
+    the transaction it was taken in, and without `async with
+    conn.transaction()` each statement on this connection is its own
+    auto-committed transaction - the lock would be released the instant
+    the SELECT returned, making the status check below a TOCTOU race
+    rather than the guard it looks like. Two operators racing conflicting
+    actions on the same row (one mark_completed, one mark_failed) would
+    otherwise both pass the check and both write, with no 409 for either -
+    exactly the kind of "controlled recovery decision" this function
+    exists to prevent. Each UPDATE additionally re-asserts `status IN
+    (...)` itself, as a second, independent guard against the same class
+    of bug (the fencing-token pattern used elsewhere in this file, applied
+    here as a status fence instead of a lease-token fence).
     """
-    row = await conn.fetchrow(
-        "SELECT * FROM handoff_requests WHERE id = $1 AND company_id = $2 FOR UPDATE",
-        handoff_id,
-        company_id,
-    )
-    if row is None:
-        raise NotFound(f"handoff {handoff_id} not found for company {company_id}")
-
-    if row["status"] not in ("needs_review", "failed"):
-        raise Conflict(
-            f"cannot resolve a handoff in status '{row['status']}' "
-            "(only needs_review/failed are operator-resolvable)"
-        )
-
-    if action == "mark_completed":
-        await conn.execute(
-            """
-            UPDATE handoff_requests
-            SET status = 'completed', crm_reference_id = $2,
-                completed_at = now(), updated_at = now(), review_reason = NULL
-            WHERE id = $1
-            """,
+    async with conn.transaction():
+        row = await conn.fetchrow(
+            "SELECT * FROM handoff_requests WHERE id = $1 AND company_id = $2 FOR UPDATE",
             handoff_id,
-            external_reference,
+            company_id,
         )
-        await _audit(conn, handoff_id, "operator_marked_completed",
-                      {"external_reference": external_reference, "reason": reason})
-    elif action == "retry":
-        await conn.execute(
-            """
-            UPDATE handoff_requests
-            SET status = 'pending', claimed_by = NULL, lease_token = NULL,
-                lease_expires_at = NULL, review_reason = NULL, updated_at = now()
-            WHERE id = $1
-            """,
-            handoff_id,
-        )
-        await _audit(conn, handoff_id, "operator_requeued", {"reason": reason})
-    elif action == "mark_failed":
-        if not reason:
-            raise ValueError("reason is required to mark_failed")
-        await conn.execute(
-            """
-            UPDATE handoff_requests
-            SET status = 'failed', last_error = $2, updated_at = now()
-            WHERE id = $1
-            """,
-            handoff_id,
-            reason,
-        )
-        await _audit(conn, handoff_id, "operator_marked_failed", {"reason": reason})
-    else:
-        raise ValueError(f"unknown action {action!r}")
+        if row is None:
+            raise NotFound(f"handoff {handoff_id} not found for company {company_id}")
 
-    return dict(await conn.fetchrow("SELECT * FROM handoff_requests WHERE id = $1", handoff_id))
+        if row["status"] not in ("needs_review", "failed"):
+            raise Conflict(
+                f"cannot resolve a handoff in status '{row['status']}' "
+                "(only needs_review/failed are operator-resolvable)"
+            )
+
+        if action == "mark_completed":
+            result = await conn.execute(
+                """
+                UPDATE handoff_requests
+                SET status = 'completed', crm_reference_id = $3,
+                    completed_at = now(), updated_at = now(), review_reason = NULL
+                WHERE id = $1 AND company_id = $2 AND status IN ('needs_review', 'failed')
+                """,
+                handoff_id,
+                company_id,
+                external_reference,
+            )
+            if not result.endswith("1"):
+                raise Conflict(f"handoff {handoff_id} changed state concurrently; resolve aborted")
+            await _audit(conn, handoff_id, "operator_marked_completed",
+                          {"external_reference": external_reference, "reason": reason})
+        elif action == "retry":
+            result = await conn.execute(
+                """
+                UPDATE handoff_requests
+                SET status = 'pending', claimed_by = NULL, lease_token = NULL,
+                    lease_expires_at = NULL, review_reason = NULL, updated_at = now()
+                WHERE id = $1 AND company_id = $2 AND status IN ('needs_review', 'failed')
+                """,
+                handoff_id,
+                company_id,
+            )
+            if not result.endswith("1"):
+                raise Conflict(f"handoff {handoff_id} changed state concurrently; resolve aborted")
+            await _audit(conn, handoff_id, "operator_requeued", {"reason": reason})
+        elif action == "mark_failed":
+            if not reason:
+                raise ValueError("reason is required to mark_failed")
+            result = await conn.execute(
+                """
+                UPDATE handoff_requests
+                SET status = 'failed', last_error = $3, updated_at = now()
+                WHERE id = $1 AND company_id = $2 AND status IN ('needs_review', 'failed')
+                """,
+                handoff_id,
+                company_id,
+                reason,
+            )
+            if not result.endswith("1"):
+                raise Conflict(f"handoff {handoff_id} changed state concurrently; resolve aborted")
+            await _audit(conn, handoff_id, "operator_marked_failed", {"reason": reason})
+        else:
+            raise ValueError(f"unknown action {action!r}")
+
+        return dict(
+            await conn.fetchrow(
+                "SELECT * FROM handoff_requests WHERE id = $1 AND company_id = $2",
+                handoff_id,
+                company_id,
+            )
+        )
 
 
 # ---------------------------------------------------------------------------

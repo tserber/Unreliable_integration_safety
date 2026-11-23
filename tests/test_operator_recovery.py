@@ -7,6 +7,8 @@ guardrails - wrong-state rejection and the required reason on
 mark_failed - that make it a *controlled* decision rather than an
 unconditional override.
 """
+import asyncio
+
 import pytest
 from httpx import ASGITransport, AsyncClient
 
@@ -105,6 +107,39 @@ async def test_operator_cannot_resolve_a_request_that_is_already_completed(pool)
 
     with pytest.raises(repository.Conflict):
         await service.resolve_handoff(pool, "acme", handoff_id, "retry")
+
+
+@pytest.mark.asyncio
+async def test_two_operators_racing_conflicting_actions_only_one_wins(pool):
+    """
+    ACID regression: operator_resolve's read-check-write must run as one
+    isolated transaction. Without that, the FOR UPDATE lock is released
+    the instant the SELECT returns, the status check becomes a TOCTOU
+    race, and two operators issuing conflicting actions on the same row
+    at once (one mark_completed, one mark_failed) could both pass the
+    check and both write - exactly the opposite of a *controlled*
+    recovery decision.
+    """
+    handoff_id, _ = await service.accept_handoff(pool, "acme", "evt-op-race", {"customer": "Jane"})
+    await _force_needs_review(pool, handoff_id)
+
+    results = await asyncio.gather(
+        service.resolve_handoff(pool, "acme", handoff_id, "mark_completed", external_reference="ref-A"),
+        service.resolve_handoff(pool, "acme", handoff_id, "mark_failed", reason="ref-B reason"),
+        return_exceptions=True,
+    )
+
+    outcomes = [r["status"] if isinstance(r, dict) else type(r) for r in results]
+    successes = [r for r in results if isinstance(r, dict)]
+    conflicts = [r for r in results if isinstance(r, repository.Conflict)]
+
+    assert len(successes) == 1, f"expected exactly one action to win, got {outcomes}"
+    assert len(conflicts) == 1, f"expected exactly one Conflict, got {outcomes}"
+
+    row = await service.get_handoff(pool, "acme", handoff_id)
+    events = [entry["event"] for entry in row["audit_log"]]
+    operator_events = [e for e in events if e.startswith("operator_")]
+    assert len(operator_events) == 1  # only the winning action was ever applied
 
 
 @pytest.mark.asyncio
