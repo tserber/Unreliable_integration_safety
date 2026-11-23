@@ -4,14 +4,20 @@
 
 This solution (architecture decisions, code, tests, and both other
 documents in this repo) was produced with Claude (Anthropic), working
-from the assignment brief in a single focused session, rather than
-written independently and merely checked by AI afterward. Concretely:
-the choice of Postgres-as-queue with `SKIP LOCKED` and a fencing-token
-lease, the CRM-A-vs-CRM-B asymmetric retry policy, the schema, the
-service/repository/worker split, all six required fault-injection tests
-plus the two extra ones, and both `DESIGN.md` and this file were drafted
-by Claude. Every test in `tests/` was actually run against a real local
-Postgres instance as part of producing this repo (not just written and
+from the assignment brief across one continuous working session, rather
+than written independently and merely checked by AI afterward.
+Concretely: the choice of Postgres-as-queue with `SKIP LOCKED` and a
+fencing-token lease, the CRM-A-vs-CRM-B asymmetric retry policy, the
+schema, the service/repository/worker split, all required and extra
+tests (including the baseline-reproduction tests that run the *original*
+naive code against fake backends, and the operator-recovery tests), the
+incident logging, the worker health-check, CI config, and both design
+documents were drafted by Claude. Claude also ran a dedicated
+ACID/SOLID/KISS self-review pass afterward, which found and fixed a real
+isolation bug in `operator_resolve` (see DESIGN.md §10) rather than only
+producing prose about those principles. Every test in `tests/` was
+actually run against a real local Postgres instance as part of producing
+this repo, including before and after that fix (not just written and
 assumed to pass) - the full suite is currently green; see the test
 output convention in `README.md` to reproduce that.
 
@@ -24,17 +30,37 @@ own work.
 ## Time spent
 
 Everything in this repo - schema, fake CRM adapters, repository/service/
-worker layers, the FastAPI app, 14 tests across 8 files, and the two
-design documents - was produced in one continuous session, run against a
-real local Postgres rather than mocked. Rough split of where the effort
-went: ~20% on reading the brief closely enough to extract the exact
-invariant each of the six scenarios wants demonstrated (this mattered
-more than the code - several of the "obvious" fixes, like just retrying
-on timeout, are wrong for CRM B specifically); ~45% on the core
-service/repository/worker implementation and getting the locking and
-fencing logic actually correct under concurrent test runs, not just
-plausible on paper; ~20% on the tests themselves, including the two
-beyond the required six; ~15% on the design document and this file.
+worker layers, the FastAPI app, 37 tests across 12 files, incident
+logging, CI, and both design documents - was produced across one
+continuous working session, run against a real local Postgres rather
+than mocked. Rough split of where the effort went:
+
+- **~15%** reading the brief closely enough to extract the exact
+  invariant each of the six scenarios wants demonstrated - this mattered
+  more than the code; several "obvious" fixes (e.g. just retrying on
+  timeout) are wrong for CRM B specifically.
+- **~35%** the core service/repository/worker implementation: getting
+  the locking and fencing logic actually correct under concurrent test
+  runs, not just plausible on paper.
+- **~20%** tests: the six required scenarios plus fairness and
+  idempotency-expiry, then a second pass adding
+  `tests/test_baseline_reproduces_incidents.py` (running the *original*
+  naive code against fake db/queue/crm backends to reproduce each
+  incident directly, not just assert it in prose) and
+  `tests/test_operator_recovery.py` (the one Part 1 requirement -
+  controlled operator recovery - that initially only had cross-company
+  denial covered, not the happy paths).
+- **~15%** a self-review pass against ACID/SOLID/KISS specifically,
+  which found and fixed a real bug: `operator_resolve`'s read-check-write
+  wasn't actually transaction-isolated, so two operators racing
+  conflicting recovery actions on the same row could both succeed. See
+  DESIGN.md §10 for the full account and the regression test that now
+  guards it.
+- **~10%** incident-labeled structured logging (one line per named
+  production incident, separate from the DB audit trail), a worker
+  heartbeat/health-check endpoint, CI (lint + full suite against a real
+  Postgres service container), and `AGENTS.md`.
+- **~5%** the design documents themselves.
 
 ## Major tradeoffs
 

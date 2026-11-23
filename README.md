@@ -139,13 +139,30 @@ transaction-boundary behavior that SQLite cannot reproduce.
 TEST_DATABASE_URL="postgresql://handoff:handoff@localhost:5432/handoff_test" pytest -v
 ```
 
-Each file under `tests/test_scenario_*.py` corresponds to one of the six
-required fault-injection scenarios in the assignment, with a docstring at
-the top stating the invariant it checks. `tests/test_fairness.py` and
-`tests/test_idempotency_key_expiry_safety_margin.py` are extra, not
-required by the brief, demonstrating two of the Part 3 design answers
-(backpressure/fairness, and idempotency-key-expiry handling) as running
-code rather than just prose.
+37 tests across 12 files, covering both the **primary (original naive)
+approach** and the **new solution**, so each fault demonstration shows
+the bug actually reproducing against the "before" code, not just the
+"after" code passing:
+
+- `tests/test_baseline_reproduces_incidents.py` - runs
+  `original_problem/baseline.py`'s own `accept_handoff`/`process_handoff`
+  (the brief's verbatim primary code, wired to fake db/queue/crm
+  backends) and reproduces each of the six Part 2 scenarios' bug
+  directly: two rows from one concurrent duplicate, a lost request
+  between insert and publish, a duplicated CRM call on retry, two
+  workers racing one handoff, duplicate delivery calling the CRM twice,
+  and no company-scoping concept at all.
+- `tests/test_scenario_*.py` (one file per scenario) - the same six
+  scenarios against the **new solution**, each asserting the stated
+  invariant now holds, with a docstring naming it.
+- `tests/test_operator_recovery.py` - the controlled-recovery half of
+  Part 1, including the regression test for the ACID isolation bug
+  described in `DESIGN.md` §10.
+- `tests/test_fairness.py`, `tests/test_idempotency_key_expiry_safety_margin.py`,
+  `tests/test_worker_heartbeat.py` - extra, not required by the brief,
+  demonstrating three more Part 3 design answers (fairness/backpressure,
+  idempotency-key expiry, and the worker health-check) as running code
+  rather than just prose.
 
 ## Comparing the original naive solution to this one
 
