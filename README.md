@@ -22,6 +22,23 @@ pip install ruff
 ruff check .
 ```
 
+## Where the primary code and the solution live
+
+- **Primary (original naive) code**: [`original_problem/baseline.py`](original_problem/baseline.py) -
+  the brief's `accept_handoff`/`process_handoff`, kept verbatim. Not run
+  in production code anywhere in this repo; only wired to fake
+  db/queue/crm backends inside
+  [`tests/test_baseline_reproduces_incidents.py`](tests/test_baseline_reproduces_incidents.py)
+  to reproduce each production incident directly.
+- **Solution code**: [`app/`](app/) - `api.py` (HTTP layer), `service.py`
+  (orchestration, framework-free), `repository.py` (raw-SQL data access),
+  `worker.py` / `worker_main.py` (the polling loop), `crm/` (fake CRM A/B
+  adapters), `config.py`, `db.py`. Schema in
+  [`migrations/`](migrations/).
+- **Side-by-side comparison of the two**:
+  [`scripts/diff_solutions.py`](scripts/diff_solutions.py) (see "Comparing
+  the original naive solution to this one" below).
+
 ## Architecture in one paragraph
 
 PostgreSQL is both the system of record and the queue: `handoff_requests`
